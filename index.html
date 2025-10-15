@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Contabilidad</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { createIcons, icons } = lucide;
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyB83ffXsLjD965CDCuKMQ0Tkur8FPvTGlQ",
+          authDomain: "contabilidad-7e45d.firebaseapp.com",
+          projectId: "contabilidad-7e45d",
+          storageBucket: "contabilidad-7e45d.firebasestorage.app",
+          messagingSenderId: "799225995329",
+          appId: "1:799225995329:web:a92f811bf8d859227d66c0"
+        };
+
+        let app, db, auth;
+        try {
+          app = firebase.initializeApp(firebaseConfig);
+          db = firebase.firestore();
+          auth = firebase.auth();
+          console.log("✅ Firebase OK");
+        } catch (error) {
+          console.error("❌ Firebase Error:", error);
+          alert("Error conectando Firebase: " + error.message);
+        }
+
+        function App() {
+          const [transacciones, setTransacciones] = useState([]);
+          const [usuario, setUsuario] = useState(null);
+          const [nombreUsuario, setNombreUsuario] = useState('');
+          const [cargando, setCargando] = useState(true);
+          const [mostrarForm, setMostrarForm] = useState(false);
+          const [vista, setVista] = useState('dashboard');
+          
+          const [form, setForm] = useState({
+            fecha: new Date().toISOString().split('T')[0],
+            tipo: 'Gasto',
+            categoria: 'Comida',
+            descripcion: '',
+            monto: '',
+            moneda: 'USD',
+            cuenta: 'Efectivo'
+          });
+
+          useEffect(() => {
+            if (!auth) return;
+            
+            const unsub = auth.onAuthStateChanged((user) => {
+              if (user) {
+                setUsuario(user);
+                const nombre = localStorage.getItem('nombreUsuario') || prompt('¿Tu nombre?') || 'Usuario';
+                localStorage.setItem('nombreUsuario', nombre);
+                setNombreUsuario(nombre);
+                setCargando(false);
+              } else {
+                auth.signInAnonymously().catch(err => {
+                  console.error(err);
+                  alert('Error de autenticación');
+                  setCargando(false);
+                });
+              }
+            });
+            return () => unsub();
+          }, []);
+
+          useEffect(() => {
+            if (!db || !usuario) return;
+            
+            const unsub = db.collection('transacciones')
+              .orderBy('fecha', 'desc')
+              .onSnapshot(snapshot => {
+                const datos = [];
+                snapshot.forEach(doc => datos.push({ id: doc.id, ...doc.data() }));
+                setTransacciones(datos);
+              });
+            return () => unsub();
+          }, [usuario]);
+
+          const agregarTransaccion = async (e) => {
+            e.preventDefault();
+            try {
+              await db.collection('transacciones').add({
+                ...form,
+                monto: parseFloat(form.monto),
+                creadoPor: nombreUsuario,
+                creadoEn: firebase.firestore.FieldValue.serverTimestamp()
+              });
+              setForm({
+                fecha: new Date().toISOString().split('T')[0],
+                tipo: 'Gasto',
+                categoria: 'Comida',
+                descripcion: '',
+                monto: '',
+                moneda: 'USD',
+                cuenta: 'Efectivo'
+              });
+              setMostrarForm(false);
+            } catch (err) {
+              alert('Error: ' + err.message);
+            }
+          };
+
+          const eliminar = async (id) => {
+            if (window.confirm('¿Eliminar?')) {
+              await db.collection('transacciones').doc(id).delete();
+            }
+          };
+
+          const calcularBalance = () => {
+            let usd = 0, usdt = 0, bs = 0;
+            transacciones.forEach(t => {
+              let m = parseFloat(t.monto);
+              if (t.tipo === 'Gasto' || t.tipo === 'Compra') m = -Math.abs(m);
+              if (t.moneda === 'USD') usd += m;
+              else if (t.moneda === 'USDT') usdt += m;
+              else if (t.moneda === 'BS') bs += m;
+            });
+            return { usd, usdt, bs };
+          };
+
+          if (cargando) {
+            return (
+              <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+                <div className="text-white text-center">
+                  <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
+                  <p className="text-xl">Conectando...</p>
+                </div>
+              </div>
+            );
+          }
+
+          const balance = calcularBalance();
+
+          return (
+            <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
+              <div className="max-w-7xl mx-auto">
+                
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 mb-6">
+                  <div className="flex justify-between items-center flex-wrap gap-4">
+                    <div>
+                      <h1 className="text-3xl font-bold mb-2">💰 Control Financiero</h1>
+                      <p className="text-purple-200">Usuario: <span className="font-bold">{nombreUsuario}</span></p>
+                      <p className="text-2xl text-green-400 mt-2">Balance: ${balance.usd.toFixed(2)} USD</p>
+                    </div>
+                    <button
+                      onClick={() => setMostrarForm(true)}
+                      className="bg-green-500 hover:bg-green-600 px-6 py-3 rounded-lg font-semibold"
+                    >
+                      + Nueva Transacción
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 mb-6 flex-wrap">
+                  <button onClick={() => setVista('dashboard')} className={`px-4 py-2 rounded-lg ${vista === 'dashboard' ? 'bg-purple-600' : 'bg-white/10'}`}>
+                    Dashboard
+                  </button>
+                  <button onClick={() => setVista('transacciones')} className={`px-4 py-2 rounded-lg ${vista === 'transacciones' ? 'bg-purple-600' : 'bg-white/10'}`}>
+                    Transacciones
+                  </button>
+                </div>
+
+                {mostrarForm && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-slate-800 rounded-2xl p-6 max-w-2xl w-full">
+                      <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-2xl font-bold">Nueva Transacción</h2>
+                        <button onClick={() => setMostrarForm(false)} className="text-gray-400 hover:text-white text-2xl">×</button>
+                      </div>
+                      <form onSubmit={agregarTransaccion} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm mb-2">Fecha</label>
+                            <input type="date" value={form.fecha} onChange={e => setForm({...form, fecha: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white" required />
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-2">Tipo</label>
+                            <select value={form.tipo} onChange={e => setForm({...form, tipo: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white">
+                              <option>Ingreso</option>
+                              <option>Gasto</option>
+                              <option>Compra</option>
+                              <option>Venta</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-2">Monto</label>
+                            <input type="number" step="0.01" value={form.monto} onChange={e => setForm({...form, monto: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white" required />
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-2">Moneda</label>
+                            <select value={form.moneda} onChange={e => setForm({...form, moneda: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white">
+                              <option>USD</option>
+                              <option>USDT</option>
+                              <option>BS</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-2">Cuenta</label>
+                            <select value={form.cuenta} onChange={e => setForm({...form, cuenta: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white">
+                              <option>Efectivo</option>
+                              <option>Banco Venezuela</option>
+                              <option>Binance</option>
+                              <option>Otro</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-2">Categoría</label>
+                            <input value={form.categoria} onChange={e => setForm({...form, categoria: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white" required />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-sm mb-2">Descripción</label>
+                          <input value={form.descripcion} onChange={e => setForm({...form, descripcion: e.target.value})} className="w-full bg-slate-700 rounded px-4 py-2 text-white" required />
+                        </div>
+                        <div className="flex gap-3">
+                          <button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 py-3 rounded-lg font-semibold">Guardar</button>
+                          <button type="button" onClick={() => setMostrarForm(false)} className="px-6 bg-slate-600 py-3 rounded-lg">Cancelar</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {vista === 'dashboard' && (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-gradient-to-br from-green-500 to-green-700 rounded-2xl p-6">
+                        <p className="text-green-100 mb-2">Balance USD</p>
+                        <p className="text-3xl font-bold">${balance.usd.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-6">
+                        <p className="text-blue-100 mb-2">Balance USDT</p>
+                        <p className="text-3xl font-bold">{balance.usdt.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-yellow-500 to-orange-600 rounded-2xl p-6">
+                        <p className="text-yellow-100 mb-2">Balance BS</p>
+                        <p className="text-3xl font-bold">{balance.bs.toFixed(2)}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6">
+                      <h2 className="text-2xl font-bold mb-4">Últimas Transacciones</h2>
+                      <div className="space-y-2">
+                        {transacciones.slice(0, 5).map(t => (
+                          <div key={t.id} className="bg-slate-700/50 rounded-lg p-4 flex justify-between items-center">
+                            <div>
+                              <p className="font-semibold">{t.descripcion}</p>
+                              <p className="text-sm text-gray-400">{t.fecha} - {t.creadoPor}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className={`text-lg font-bold ${t.tipo === 'Ingreso' || t.tipo === 'Venta' ? 'text-green-400' : 'text-red-400'}`}>
+                                {t.tipo === 'Ingreso' || t.tipo === 'Venta' ? '+' : '-'}{Math.abs(t.monto).toFixed(2)} {t.moneda}
+                              </p>
+                              <p className="text-sm text-gray-400">{t.categoria}</p>
+                            </div>
+                          </div>
+                        ))}
+                        {transacciones.length === 0 && (
+                          <p className="text-center text-gray-400 py-8">No hay transacciones</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {vista === 'transacciones' && (
+                  <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6">
+                    <h2 className="text-2xl font-bold mb-4">Todas las Transacciones</h2>
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-white/20">
+                            <th className="text-left p-3">Fecha</th>
+                            <th className="text-left p-3">Tipo</th>
+                            <th className="text-left p-3">Descripción</th>
+                            <th className="text-right p-3">Monto</th>
+                            <th className="text-left p-3">Usuario</th>
+                            <th className="text-center p-3">Acción</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {transacciones.map(t => (
+                            <tr key={t.id} className="border-b border-white/10 hover:bg-white/5">
+                              <td className="p-3">{t.fecha}</td>
+                              <td className="p-3">
+                                <span className={`px-2 py-1 rounded text-sm ${
+                                  t.tipo === 'Ingreso' ? 'bg-green-500/20 text-green-400' :
+                                  t.tipo === 'Gasto' ? 'bg-red-500/20 text-red-400' :
+                                  t.tipo === 'Compra' ? 'bg-blue-500/20 text-blue-400' :
+                                  'bg-yellow-500/20 text-yellow-400'
+                                }`}>
+                                  {t.tipo}
+                                </span>
+                              </td>
+                              <td className="p-3">{t.descripcion}</td>
+                              <td className="p-3 text-right font-semibold">
+                                <span className={t.tipo === 'Ingreso' || t.tipo === 'Venta' ? 'text-green-400' : 'text-red-400'}>
+                                  {t.tipo === 'Ingreso' || t.tipo === 'Venta' ? '+' : '-'}{Math.abs(t.monto).toFixed(2)} {t.moneda}
+                                </span>
+                              </td>
+                              <td className="p-3 text-sm text-purple-300">{t.creadoPor}</td>
+                              <td className="p-3 text-center">
+                                <button onClick={() => eliminar(t.id)} className="text-red-400 hover:text-red-300">
+                                  ✕
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
