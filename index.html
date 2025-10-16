@@ -110,6 +110,17 @@
             gananciaDolar: 0
           });
 
+          const [formGasto, setFormGasto] = useState({
+            fecha: new Date().toISOString().split('T')[0],
+            descripcion: '',
+            monto: '',
+            categoria: 'Varios',
+            cuenta: 'Provincial',
+            moneda: 'Bs',
+            total: '',
+            gastoDolar: 0
+          });
+
           const [tasaVenta, setTasaVenta] = useState(37.00);
 
           const temaActual = temas[tema];
@@ -124,37 +135,74 @@
             return () => unsub();
           }, []);
 
-          // Sincronizar transacciones
+          // Sincronizar transacciones DEL USUARIO ACTUAL
           useEffect(() => {
             if (!db || !usuario) return;
+            
+            // Filtrar solo las transacciones del usuario actual usando su UID
             const unsub = db.collection('transacciones')
+              .where('usuarioId', '==', usuario.uid)
               .orderBy('fecha', 'desc')
               .onSnapshot(snapshot => {
                 const datos = [];
                 snapshot.forEach(doc => datos.push({ id: doc.id, ...doc.data() }));
                 setTransacciones(datos);
+              }, error => {
+                console.error("Error al cargar transacciones:", error);
+                // Si hay error de índice, intentar sin orderBy
+                db.collection('transacciones')
+                  .where('usuarioId', '==', usuario.uid)
+                  .onSnapshot(snapshot => {
+                    const datos = [];
+                    snapshot.forEach(doc => datos.push({ id: doc.id, ...doc.data() }));
+                    // Ordenar manualmente
+                    datos.sort((a, b) => b.fecha.localeCompare(a.fecha));
+                    setTransacciones(datos);
+                  });
               });
             return () => unsub();
           }, [usuario]);
 
-          // Sincronizar tasa de venta
+          // Sincronizar tasa de venta DEL USUARIO ACTUAL
           useEffect(() => {
             if (!db || !usuario) return;
-            const unsub = db.collection('configuracion')
+            const unsub = db.collection('usuarios')
+              .doc(usuario.uid)
+              .collection('configuracion')
               .doc('tasaVenta')
               .onSnapshot(doc => {
-                if (doc.exists) setTasaVenta(doc.data().valor);
+                if (doc.exists) {
+                  setTasaVenta(doc.data().valor);
+                } else {
+                  // Si no existe, crear configuración inicial
+                  db.collection('usuarios')
+                    .doc(usuario.uid)
+                    .collection('configuracion')
+                    .doc('tasaVenta')
+                    .set({ valor: 37.00 });
+                }
               });
             return () => unsub();
           }, [usuario]);
 
-          // Sincronizar tasas de cambio
+          // Sincronizar tasas de cambio DEL USUARIO ACTUAL
           useEffect(() => {
             if (!db || !usuario) return;
-            const unsub = db.collection('configuracion')
+            const unsub = db.collection('usuarios')
+              .doc(usuario.uid)
+              .collection('configuracion')
               .doc('tasaCambio')
               .onSnapshot(doc => {
-                if (doc.exists) setTasaCambio(doc.data());
+                if (doc.exists) {
+                  setTasaCambio(doc.data());
+                } else {
+                  // Si no existe, crear configuración inicial
+                  db.collection('usuarios')
+                    .doc(usuario.uid)
+                    .collection('configuracion')
+                    .doc('tasaCambio')
+                    .set({ usdToBs: 36.50, usdtToUsd: 1.00 });
+                }
               });
             return () => unsub();
           }, [usuario]);
@@ -180,6 +228,19 @@
             }
           }, [formCompra.compraBs, formCompra.tasa, tasaVenta, form.tipo]);
 
+          // Calcular campos automáticos de Gasto
+          useEffect(() => {
+            if (form.tipo === 'Gasto') {
+              const total = parseFloat(formGasto.total) || 0;
+              const gastoDolar = tasaVenta > 0 ? total / tasaVenta : 0;
+
+              setFormGasto(prev => ({
+                ...prev,
+                gastoDolar: gastoDolar
+              }));
+            }
+          }, [formGasto.total, tasaVenta, form.tipo]);
+
           // Login
           const handleLogin = async (e) => {
             e.preventDefault();
@@ -187,8 +248,16 @@
               if (modoLogin === 'login') {
                 await auth.signInWithEmailAndPassword(email, password);
               } else {
-                await auth.createUserWithEmailAndPassword(email, password);
-                // Enviar notificación de bienvenida
+                const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+                // Crear configuración inicial para el nuevo usuario
+                const uid = userCredential.user.uid;
+                await db.collection('usuarios').doc(uid).set({
+                  email: email,
+                  creadoEn: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                await db.collection('usuarios').doc(uid).collection('configuracion').doc('tasaVenta').set({ valor: 37.00 });
+                await db.collection('usuarios').doc(uid).collection('configuracion').doc('tasaCambio').set({ usdToBs: 36.50, usdtToUsd: 1.00 });
+                
                 enviarNotificacion(email, 'Bienvenido', 'Tu cuenta ha sido creada exitosamente');
               }
             } catch (error) {
@@ -198,6 +267,10 @@
 
           const handleLogout = () => {
             auth.signOut();
+            // Limpiar datos al cerrar sesión
+            setTransacciones([]);
+            setTasaVenta(37.00);
+            setTasaCambio({ usdToBs: 36.50, usdtToUsd: 1.00 });
           };
 
           // CRUD Transacciones
@@ -207,7 +280,6 @@
               let datosTransaccion;
               
               if (form.tipo === 'Compra') {
-                // Guardar transacción de Compra con datos especiales
                 datosTransaccion = {
                   tipo: 'Compra',
                   fecha: formCompra.fecha,
@@ -221,19 +293,36 @@
                   gananciaBs: formCompra.gananciaBs,
                   gananciaDolar: formCompra.gananciaDolar,
                   tasaVenta: tasaVenta,
-                  monto: formCompra.compraDolar, // Para compatibilidad con reportes
+                  monto: formCompra.compraDolar,
                   moneda: 'USD',
                   categoria: 'Compra de Divisas',
                   descripcion: `Compra - Cliente: ${formCompra.cliente}`,
                   cuenta: 'Operaciones',
+                  usuarioId: usuario.uid, // ID del usuario
+                  creadoPor: usuario.email,
+                  creadoEn: firebase.firestore.FieldValue.serverTimestamp()
+                };
+              } else if (form.tipo === 'Gasto') {
+                datosTransaccion = {
+                  tipo: 'Gasto',
+                  fecha: formGasto.fecha,
+                  descripcion: formGasto.descripcion,
+                  monto: parseFloat(formGasto.monto) || 0,
+                  categoria: formGasto.categoria,
+                  cuenta: formGasto.cuenta,
+                  moneda: formGasto.moneda,
+                  total: parseFloat(formGasto.total) || 0,
+                  gastoDolar: formGasto.gastoDolar,
+                  tasaVenta: tasaVenta,
+                  usuarioId: usuario.uid, // ID del usuario
                   creadoPor: usuario.email,
                   creadoEn: firebase.firestore.FieldValue.serverTimestamp()
                 };
               } else {
-                // Transacción normal
                 datosTransaccion = {
                   ...form,
                   monto: parseFloat(form.monto),
+                  usuarioId: usuario.uid, // ID del usuario
                   creadoPor: usuario.email,
                   creadoEn: firebase.firestore.FieldValue.serverTimestamp()
                 };
@@ -263,6 +352,16 @@
                 gananciaBs: 0,
                 gananciaDolar: 0
               });
+              setFormGasto({
+                fecha: new Date().toISOString().split('T')[0],
+                descripcion: '',
+                monto: '',
+                categoria: 'Varios',
+                cuenta: 'Provincial',
+                moneda: 'Bs',
+                total: '',
+                gastoDolar: 0
+              });
               setMostrarForm(false);
               
               // Notificar
@@ -275,16 +374,20 @@
           };
 
           const eliminar = async (id) => {
-            if (window.confirm('¿Eliminar?')) {
+            if (window.confirm('¿Eliminar esta transacción?')) {
               await db.collection('transacciones').doc(id).delete();
             }
           };
 
-          // Actualizar tasas
+          // Actualizar tasas DEL USUARIO ACTUAL
           const actualizarTasas = async () => {
             try {
-              await db.collection('configuracion').doc('tasaCambio').set(tasaCambio);
-              alert('Tasas actualizadas');
+              await db.collection('usuarios')
+                .doc(usuario.uid)
+                .collection('configuracion')
+                .doc('tasaCambio')
+                .set(tasaCambio);
+              alert('Tasas actualizadas correctamente');
             } catch (error) {
               alert('Error: ' + error.message);
             }
@@ -367,14 +470,14 @@
             const ws = XLSX.utils.json_to_sheet(datos);
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "Transacciones");
-            XLSX.writeFile(wb, `contabilidad_${new Date().toISOString().split('T')[0]}.xlsx`);
+            XLSX.writeFile(wb, `contabilidad_${usuario.email}_${new Date().toISOString().split('T')[0]}.xlsx`);
           };
 
           const exportarPDF = () => {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
             doc.setFontSize(16);
-            doc.text('Reporte de Transacciones', 20, 20);
+            doc.text(`Reporte de ${usuario.email}`, 20, 20);
             doc.setFontSize(10);
             let y = 40;
             obtenerTransaccionesFiltradas().slice(0, 30).forEach((t, i) => {
@@ -385,14 +488,12 @@
                 y = 20;
               }
             });
-            doc.save(`reporte_${new Date().toISOString().split('T')[0]}.pdf`);
+            doc.save(`reporte_${usuario.email}_${new Date().toISOString().split('T')[0]}.pdf`);
           };
 
           // Notificaciones
           const enviarNotificacion = (email, asunto, mensaje) => {
-            // Aquí se integraría EmailJS o similar
             console.log(`Enviando email a ${email}: ${asunto} - ${mensaje}`);
-            // emailjs.send('service_id', 'template_id', { to_email: email, subject: asunto, message: mensaje });
           };
 
           // Gráfico
@@ -475,6 +576,12 @@
                   >
                     {modoLogin === 'login' ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Inicia sesión'}
                   </button>
+                  
+                  <div className="mt-8 pt-6 border-t border-white/20">
+                    <p className={`text-center text-sm ${temaActual.texto} opacity-75`}>
+                      💡 Cada usuario tiene su propia base de datos separada
+                    </p>
+                  </div>
                 </div>
               </div>
             );
@@ -492,7 +599,8 @@
                   <div className="flex justify-between items-center flex-wrap gap-4">
                     <div>
                       <h1 className="text-3xl font-bold mb-2">💰 Sistema Premium</h1>
-                      <p className="text-sm opacity-75">{usuario.email}</p>
+                      <p className="text-sm opacity-75">👤 {usuario.email}</p>
+                      <p className="text-xs opacity-50 mt-1">Mis datos personales</p>
                       <p className="text-2xl mt-2 font-bold text-green-400">${balance.usd.toFixed(2)} USD</p>
                     </div>
                     <div className="flex gap-2 flex-wrap">
@@ -655,6 +763,113 @@
                               </div>
                             </div>
                           </div>
+                        ) : form.tipo === 'Gasto' ? (
+                          /* Formulario para GASTO */
+                          <div className="space-y-4">
+                            <div className="bg-gradient-to-r from-red-500 to-orange-500 rounded-lg p-4 mb-4">
+                              <p className="text-sm text-red-100 mb-1">Gasto en $ (Calculado)</p>
+                              <p className="text-3xl font-bold text-white">${formGasto.gastoDolar.toFixed(2)}</p>
+                              <p className="text-xs text-red-100 mt-1">Total ÷ Tasa de Venta ({tasaVenta.toFixed(2)} Bs)</p>
+                            </div>
+
+                            <div>
+                              <label className="block text-sm mb-2 text-white">Fecha</label>
+                              <input 
+                                type="date" 
+                                value={formGasto.fecha} 
+                                onChange={e => setFormGasto({...formGasto, fecha: e.target.value})} 
+                                className="w-full bg-slate-700 rounded px-4 py-2 text-white" 
+                                required 
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-sm mb-2 text-white">Descripción</label>
+                              <textarea
+                                value={formGasto.descripcion} 
+                                onChange={e => setFormGasto({...formGasto, descripcion: e.target.value})} 
+                                className="w-full bg-slate-700 rounded px-4 py-2 text-white resize-none" 
+                                placeholder="Breve descripción del gasto"
+                                rows="3"
+                                required 
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-sm mb-2 text-white">Monto</label>
+                              <input 
+                                type="number" 
+                                step="0.01" 
+                                value={formGasto.monto} 
+                                onChange={e => setFormGasto({...formGasto, monto: e.target.value})} 
+                                className="w-full bg-slate-700 rounded px-4 py-2 text-white" 
+                                placeholder="0.00"
+                                required 
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-sm mb-2 text-white">Categoría</label>
+                                <select 
+                                  value={formGasto.categoria} 
+                                  onChange={e => setFormGasto({...formGasto, categoria: e.target.value})} 
+                                  className="w-full bg-slate-700 rounded px-4 py-2 text-white"
+                                >
+                                  <option>Varios</option>
+                                  <option>Escuela</option>
+                                  <option>Servicios</option>
+                                  <option>Rafael</option>
+                                  <option>Emilys</option>
+                                  <option>Casa</option>
+                                  <option>Carro</option>
+                                  <option>Prestamos</option>
+                                  <option>Remesas</option>
+                                  <option>Pasajes</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-sm mb-2 text-white">Cuenta</label>
+                                <select 
+                                  value={formGasto.cuenta} 
+                                  onChange={e => setFormGasto({...formGasto, cuenta: e.target.value})} 
+                                  className="w-full bg-slate-700 rounded px-4 py-2 text-white"
+                                >
+                                  <option>Provincial</option>
+                                  <option>Venezuela</option>
+                                  <option>USD</option>
+                                  <option>Binance</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-sm mb-2 text-white">Moneda</label>
+                              <select 
+                                value={formGasto.moneda} 
+                                onChange={e => setFormGasto({...formGasto, moneda: e.target.value})} 
+                                className="w-full bg-slate-700 rounded px-4 py-2 text-white"
+                              >
+                                <option>USDT</option>
+                                <option>Bs</option>
+                                <option>USD</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-sm mb-2 text-white font-semibold">Total</label>
+                              <input 
+                                type="number" 
+                                step="0.01" 
+                                value={formGasto.total} 
+                                onChange={e => setFormGasto({...formGasto, total: e.target.value})} 
+                                className="w-full bg-slate-700 rounded px-4 py-2 text-white text-lg font-semibold" 
+                                placeholder="0.00"
+                                required 
+                              />
+                              <p className="text-xs text-gray-400 mt-1">Este monto se usa para calcular el gasto en dólares</p>
+                            </div>
+                          </div>
                         ) : (
                           /* Formulario NORMAL para otros tipos */
                           <div className="grid grid-cols-2 gap-4">
@@ -732,7 +947,7 @@
                         <p className="text-3xl font-bold">{balance.bs.toFixed(2)}</p>
                       </div>
                       <div className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-2xl p-6 text-white">
-                        <p className="mb-2">Transacciones</p>
+                        <p className="mb-2">Mis Transacciones</p>
                         <p className="text-3xl font-bold">{transacciones.length}</p>
                       </div>
                     </div>
@@ -779,7 +994,7 @@
 
                 {vista === 'transacciones' && (
                   <div className={`${temaActual.tarjeta} backdrop-blur-lg rounded-2xl p-6`}>
-                    <h2 className="text-2xl font-bold mb-4">Historial</h2>
+                    <h2 className="text-2xl font-bold mb-4">Mi Historial de Transacciones</h2>
                     <div className="overflow-x-auto">
                       <table className="w-full">
                         <thead>
@@ -788,7 +1003,6 @@
                             <th className="text-left p-3">Tipo</th>
                             <th className="text-left p-3">Detalles</th>
                             <th className="text-right p-3">Monto</th>
-                            <th className="text-left p-3">Usuario</th>
                             <th className="text-center p-3">Acción</th>
                           </tr>
                         </thead>
@@ -815,6 +1029,13 @@
                                     <p className="text-sm">Tasa: {t.tasa} Bs - Compra: {t.compraBs.toFixed(2)} Bs</p>
                                     <p className="text-sm text-green-400">Ganancia: {t.gananciaBs.toFixed(2)} Bs (${t.gananciaDolar.toFixed(2)})</p>
                                   </div>
+                                ) : t.tipo === 'Gasto' && t.gastoDolar !== undefined ? (
+                                  <div className="space-y-1">
+                                    <p className="font-semibold">{t.descripcion}</p>
+                                    <p className="text-sm">Categoría: {t.categoria} | Cuenta: {t.cuenta}</p>
+                                    <p className="text-sm">Total: {t.total ? t.total.toFixed(2) : t.monto.toFixed(2)} {t.moneda}</p>
+                                    <p className="text-sm text-red-400">Gasto en $: ${t.gastoDolar.toFixed(2)}</p>
+                                  </div>
                                 ) : (
                                   <div>
                                     <p className="font-semibold">{t.descripcion}</p>
@@ -833,7 +1054,6 @@
                                   )}
                                 </span>
                               </td>
-                              <td className="p-3 text-sm">{t.creadoPor}</td>
                               <td className="p-3 text-center">
                                 <button onClick={() => eliminar(t.id)} className="text-red-400 hover:text-red-300">✕</button>
                               </td>
@@ -879,7 +1099,7 @@
 
                 {vista === 'tasas' && (
                   <div className={`${temaActual.tarjeta} backdrop-blur-lg rounded-2xl p-6`}>
-                    <h2 className="text-2xl font-bold mb-4">💱 Configuración de Tasas</h2>
+                    <h2 className="text-2xl font-bold mb-4">💱 Mis Configuraciones de Tasas</h2>
                     
                     <div className="space-y-6">
                       <div>
@@ -909,7 +1129,7 @@
                       </div>
 
                       <div className="bg-green-500/20 border border-green-500 rounded-lg p-4">
-                        <h3 className="text-lg font-bold mb-3 text-green-400">Tasa de Venta (Para Cálculo de Ganancias)</h3>
+                        <h3 className="text-lg font-bold mb-3 text-green-400">Tasa de Venta (Para Cálculo de Ganancias y Gastos)</h3>
                         <div>
                           <label className="block text-sm mb-2">Precio de Venta por Dólar (en Bs)</label>
                           <input
@@ -920,8 +1140,14 @@
                             className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
                             placeholder="37.00"
                           />
-                          <p className="text-xs text-green-300 mt-2">Esta tasa se usa para calcular las ganancias en las compras de divisas</p>
+                          <p className="text-xs text-green-300 mt-2">Esta tasa se usa para calcular las ganancias en las compras de divisas y para convertir los gastos a dólares</p>
                         </div>
+                      </div>
+
+                      <div className="bg-blue-500/20 border border-blue-500 rounded-lg p-4">
+                        <p className="text-sm text-blue-200">
+                          📝 <strong>Nota:</strong> Estas configuraciones son personales y no afectan a otros usuarios del sistema.
+                        </p>
                       </div>
                     </div>
 
@@ -935,8 +1161,12 @@
                       <button
                         onClick={async () => {
                           try {
-                            await db.collection('configuracion').doc('tasaVenta').set({ valor: tasaVenta });
-                            alert('Tasa de venta actualizada');
+                            await db.collection('usuarios')
+                              .doc(usuario.uid)
+                              .collection('configuracion')
+                              .doc('tasaVenta')
+                              .set({ valor: tasaVenta });
+                            alert('Tasa de venta actualizada correctamente');
                           } catch (error) {
                             alert('Error: ' + error.message);
                           }
