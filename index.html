@@ -123,6 +123,15 @@
 
           const [tasaVenta, setTasaVenta] = useState(37.00);
 
+          // Filtros para cuentas por cobrar
+          const [filtrosPorCobrar, setFiltrosPorCobrar] = useState({
+            cliente: 'todos',
+            status: 'Por Cobrar',
+            fechaInicio: '',
+            fechaFin: '',
+            operador: 'todos'
+          });
+
           const temaActual = temas[tema];
 
           // Auth
@@ -455,6 +464,113 @@
             return Array.from(meses).sort().reverse();
           };
 
+          // Funciones para cuentas por cobrar
+          const obtenerCompras = () => {
+            return transacciones.filter(t => t.tipo === 'Compra');
+          };
+
+          const obtenerClientesUnicos = () => {
+            const compras = obtenerCompras();
+            const clientes = new Set();
+            compras.forEach(c => {
+              if (c.cliente) clientes.add(c.cliente);
+            });
+            return Array.from(clientes).sort();
+          };
+
+          const obtenerOperadoresUnicos = () => {
+            const compras = obtenerCompras();
+            const operadores = new Set();
+            compras.forEach(c => {
+              if (c.operador) operadores.add(c.operador);
+            });
+            return Array.from(operadores).sort();
+          };
+
+          const obtenerComprasFiltradas = () => {
+            let compras = obtenerCompras();
+
+            // Filtrar por cliente
+            if (filtrosPorCobrar.cliente !== 'todos') {
+              compras = compras.filter(c => c.cliente === filtrosPorCobrar.cliente);
+            }
+
+            // Filtrar por status
+            if (filtrosPorCobrar.status !== 'todos') {
+              compras = compras.filter(c => c.status === filtrosPorCobrar.status);
+            }
+
+            // Filtrar por operador
+            if (filtrosPorCobrar.operador !== 'todos') {
+              compras = compras.filter(c => c.operador === filtrosPorCobrar.operador);
+            }
+
+            // Filtrar por fecha inicio
+            if (filtrosPorCobrar.fechaInicio) {
+              compras = compras.filter(c => c.fecha >= filtrosPorCobrar.fechaInicio);
+            }
+
+            // Filtrar por fecha fin
+            if (filtrosPorCobrar.fechaFin) {
+              compras = compras.filter(c => c.fecha <= filtrosPorCobrar.fechaFin);
+            }
+
+            return compras.sort((a, b) => b.fecha.localeCompare(a.fecha));
+          };
+
+          const calcularTotalPorCobrar = () => {
+            const comprasFiltradas = obtenerComprasFiltradas();
+            let totalBs = 0;
+            let totalUsd = 0;
+            let totalGananciaBs = 0;
+            let totalGananciaUsd = 0;
+
+            comprasFiltradas.forEach(c => {
+              totalBs += c.compraBs || 0;
+              totalUsd += c.compraDolar || 0;
+              totalGananciaBs += c.gananciaBs || 0;
+              totalGananciaUsd += c.gananciaDolar || 0;
+            });
+
+            return {
+              cantidad: comprasFiltradas.length,
+              totalBs,
+              totalUsd,
+              totalGananciaBs,
+              totalGananciaUsd
+            };
+          };
+
+          const obtenerResumenPorCliente = () => {
+            const comprasFiltradas = obtenerComprasFiltradas();
+            const resumen = {};
+
+            comprasFiltradas.forEach(c => {
+              if (!resumen[c.cliente]) {
+                resumen[c.cliente] = {
+                  cliente: c.cliente,
+                  cantidad: 0,
+                  totalBs: 0,
+                  totalUsd: 0,
+                  porCobrar: 0,
+                  pagado: 0
+                };
+              }
+
+              resumen[c.cliente].cantidad++;
+              resumen[c.cliente].totalBs += c.compraBs || 0;
+              resumen[c.cliente].totalUsd += c.compraDolar || 0;
+
+              if (c.status === 'Por Cobrar') {
+                resumen[c.cliente].porCobrar += c.compraDolar || 0;
+              } else {
+                resumen[c.cliente].pagado += c.compraDolar || 0;
+              }
+            });
+
+            return Object.values(resumen).sort((a, b) => b.totalUsd - a.totalUsd);
+          };
+
           // Exportar
           const exportarExcel = () => {
             const datos = transacciones.map(t => ({
@@ -621,13 +737,13 @@
                 </div>
 
                 <div className="flex gap-2 mb-6 flex-wrap">
-                  {['dashboard', 'transacciones', 'graficos', 'calendario', 'tasas', 'temas'].map(v => (
+                  {['dashboard', 'transacciones', 'porCobrar', 'graficos', 'calendario', 'tasas', 'temas'].map(v => (
                     <button
                       key={v}
                       onClick={() => setVista(v)}
                       className={`px-4 py-2 rounded-lg ${vista === v ? temaActual.boton : 'bg-white/10'} text-white`}
                     >
-                      {v.charAt(0).toUpperCase() + v.slice(1)}
+                      {v === 'porCobrar' ? 'Por Cobrar' : v.charAt(0).toUpperCase() + v.slice(1)}
                     </button>
                   ))}
                 </div>
@@ -1061,6 +1177,219 @@
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+                )}
+
+                {vista === 'porCobrar' && (
+                  <div className="space-y-6">
+                    {/* Resumen total */}
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                      <div className="bg-gradient-to-br from-orange-500 to-red-600 rounded-2xl p-6 text-white">
+                        <p className="text-sm mb-2">Transacciones</p>
+                        <p className="text-3xl font-bold">{calcularTotalPorCobrar().cantidad}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-yellow-500 to-orange-600 rounded-2xl p-6 text-white">
+                        <p className="text-sm mb-2">Total en Bs</p>
+                        <p className="text-2xl font-bold">{calcularTotalPorCobrar().totalBs.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-6 text-white">
+                        <p className="text-sm mb-2">Total en USD</p>
+                        <p className="text-3xl font-bold">${calcularTotalPorCobrar().totalUsd.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-green-500 to-green-700 rounded-2xl p-6 text-white">
+                        <p className="text-sm mb-2">Ganancia Bs</p>
+                        <p className="text-2xl font-bold">{calcularTotalPorCobrar().totalGananciaBs.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl p-6 text-white">
+                        <p className="text-sm mb-2">Ganancia USD</p>
+                        <p className="text-3xl font-bold">${calcularTotalPorCobrar().totalGananciaUsd.toFixed(2)}</p>
+                      </div>
+                    </div>
+
+                    {/* Filtros */}
+                    <div className={`${temaActual.tarjeta} backdrop-blur-lg rounded-2xl p-6`}>
+                      <h2 className="text-2xl font-bold mb-4">🔍 Filtros</h2>
+                      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                        <div>
+                          <label className="block text-sm mb-2 font-semibold">Cliente</label>
+                          <select
+                            value={filtrosPorCobrar.cliente}
+                            onChange={e => setFiltrosPorCobrar({...filtrosPorCobrar, cliente: e.target.value})}
+                            className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
+                          >
+                            <option value="todos">Todos los clientes</option>
+                            {obtenerClientesUnicos().map(cliente => (
+                              <option key={cliente} value={cliente}>{cliente}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm mb-2 font-semibold">Status</label>
+                          <select
+                            value={filtrosPorCobrar.status}
+                            onChange={e => setFiltrosPorCobrar({...filtrosPorCobrar, status: e.target.value})}
+                            className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
+                          >
+                            <option value="todos">Todos</option>
+                            <option value="Por Cobrar">Por Cobrar</option>
+                            <option value="Pagado">Pagado</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm mb-2 font-semibold">Operador</label>
+                          <select
+                            value={filtrosPorCobrar.operador}
+                            onChange={e => setFiltrosPorCobrar({...filtrosPorCobrar, operador: e.target.value})}
+                            className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
+                          >
+                            <option value="todos">Todos los operadores</option>
+                            {obtenerOperadoresUnicos().map(operador => (
+                              <option key={operador} value={operador}>{operador}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm mb-2 font-semibold">Fecha Inicio</label>
+                          <input
+                            type="date"
+                            value={filtrosPorCobrar.fechaInicio}
+                            onChange={e => setFiltrosPorCobrar({...filtrosPorCobrar, fechaInicio: e.target.value})}
+                            className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm mb-2 font-semibold">Fecha Fin</label>
+                          <input
+                            type="date"
+                            value={filtrosPorCobrar.fechaFin}
+                            onChange={e => setFiltrosPorCobrar({...filtrosPorCobrar, fechaFin: e.target.value})}
+                            className="w-full bg-slate-700 text-white rounded-lg px-4 py-2"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-4">
+                        <button
+                          onClick={() => setFiltrosPorCobrar({
+                            cliente: 'todos',
+                            status: 'Por Cobrar',
+                            fechaInicio: '',
+                            fechaFin: '',
+                            operador: 'todos'
+                          })}
+                          className="bg-slate-600 hover:bg-slate-700 text-white px-6 py-2 rounded-lg"
+                        >
+                          Limpiar Filtros
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Resumen por cliente */}
+                    <div className={`${temaActual.tarjeta} backdrop-blur-lg rounded-2xl p-6`}>
+                      <h2 className="text-2xl font-bold mb-4">👥 Resumen por Cliente</h2>
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b border-white/20">
+                              <th className="text-left p-3">Cliente</th>
+                              <th className="text-center p-3">Operaciones</th>
+                              <th className="text-right p-3">Total Bs</th>
+                              <th className="text-right p-3">Total USD</th>
+                              <th className="text-right p-3">Por Cobrar</th>
+                              <th className="text-right p-3">Pagado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {obtenerResumenPorCliente().map(resumen => (
+                              <tr key={resumen.cliente} className="border-b border-white/10 hover:bg-white/5">
+                                <td className="p-3 font-semibold">{resumen.cliente}</td>
+                                <td className="p-3 text-center">{resumen.cantidad}</td>
+                                <td className="p-3 text-right">{resumen.totalBs.toFixed(2)} Bs</td>
+                                <td className="p-3 text-right font-semibold text-blue-400">${resumen.totalUsd.toFixed(2)}</td>
+                                <td className="p-3 text-right">
+                                  <span className="text-orange-400 font-bold">${resumen.porCobrar.toFixed(2)}</span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <span className="text-green-400 font-bold">${resumen.pagado.toFixed(2)}</span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Lista detallada */}
+                    <div className={`${temaActual.tarjeta} backdrop-blur-lg rounded-2xl p-6`}>
+                      <h2 className="text-2xl font-bold mb-4">📋 Detalle de Transacciones</h2>
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b border-white/20">
+                              <th className="text-left p-3">Fecha</th>
+                              <th className="text-left p-3">Cliente</th>
+                              <th className="text-left p-3">Operador</th>
+                              <th className="text-center p-3">Status</th>
+                              <th className="text-right p-3">Compra Bs</th>
+                              <th className="text-right p-3">Tasa</th>
+                              <th className="text-right p-3">Compra USD</th>
+                              <th className="text-right p-3">Ganancia</th>
+                              <th className="text-center p-3">Acción</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {obtenerComprasFiltradas().map(compra => (
+                              <tr key={compra.id} className="border-b border-white/10 hover:bg-white/5">
+                                <td className="p-3">{compra.fecha}</td>
+                                <td className="p-3 font-semibold">{compra.cliente}</td>
+                                <td className="p-3">{compra.operador}</td>
+                                <td className="p-3 text-center">
+                                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                    compra.status === 'Pagado' 
+                                      ? 'bg-green-500/20 text-green-400 border border-green-500' 
+                                      : 'bg-orange-500/20 text-orange-400 border border-orange-500'
+                                  }`}>
+                                    {compra.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">{compra.compraBs.toFixed(2)} Bs</td>
+                                <td className="p-3 text-right">{compra.tasa.toFixed(2)}</td>
+                                <td className="p-3 text-right font-bold text-blue-400">${compra.compraDolar.toFixed(2)}</td>
+                                <td className="p-3 text-right">
+                                  <div className="text-sm">
+                                    <div className="text-green-400 font-semibold">{compra.gananciaBs.toFixed(2)} Bs</div>
+                                    <div className="text-green-300">${compra.gananciaDolar.toFixed(2)}</div>
+                                  </div>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={async () => {
+                                      const nuevoStatus = compra.status === 'Pagado' ? 'Por Cobrar' : 'Pagado';
+                                      if (window.confirm(`¿Cambiar status a "${nuevoStatus}"?`)) {
+                                        await db.collection('transacciones').doc(compra.id).update({
+                                          status: nuevoStatus
+                                        });
+                                      }
+                                    }}
+                                    className={`px-3 py-1 rounded text-xs font-semibold ${
+                                      compra.status === 'Pagado'
+                                        ? 'bg-orange-600 hover:bg-orange-700'
+                                        : 'bg-green-600 hover:bg-green-700'
+                                    } text-white`}
+                                  >
+                                    {compra.status === 'Pagado' ? 'Marcar Por Cobrar' : 'Marcar Pagado'}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 )}
